@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pipe Dash</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d17;color:#fff;font-family:"Trebuchet MS",Verdana,sans-serif;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:12px}
+  h1{font-size:20px;letter-spacing:2px;margin-bottom:8px;color:#ffd84d;text-shadow:2px 2px 0 #b3410a}
+  #wrap{position:relative;width:100%;max-width:960px}
+  canvas{width:100%;display:block;image-rendering:pixelated;border:4px solid #3a2b12;border-radius:6px;background:#5c94fc}
+  .overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+           background:rgba(8,8,20,.88);text-align:center;padding:24px;border-radius:6px}
+  .overlay h2{font-size:30px;color:#ffd84d;margin-bottom:10px;text-shadow:2px 2px 0 #b3410a}
+  .overlay p{font-size:14px;line-height:1.7;max-width:560px;margin-bottom:8px;color:#dfe4ff}
+  .btn{margin-top:14px;padding:12px 26px;font-size:15px;font-weight:bold;letter-spacing:1px;cursor:pointer;
+       border:none;border-radius:4px;background:#e52521;color:#fff;box-shadow:0 4px 0 #8e1210}
+  .btn:hover{background:#ff3b36}
+  .btn.alt{background:#2b8a3e;box-shadow:0 4px 0 #175726}
+  .btn.alt:hover{background:#36a94c}
+  .hint{margin-top:12px;font-size:12px;color:#9aa3c7}
+  #hud{font-size:12px;color:#9aa3c7;margin-top:8px;text-align:center}
+  #regForm{margin-top:14px;width:100%;max-width:380px;text-align:left}
+  .field{margin-bottom:10px}
+  .field label{display:block;font-size:12px;color:#9aa3c7;margin-bottom:4px;letter-spacing:1px}
+  .field input[type=text]{width:100%;padding:9px 10px;font-size:14px;border-radius:4px;
+       border:1px solid #40466f;background:#171a2e;color:#fff}
+  .radios{display:flex;gap:14px}
+  .radios label{display:flex;align-items:center;gap:5px;font-size:13px;color:#dfe4ff;letter-spacing:0}
+  .err{color:#ff6b5e;font-size:12px;min-height:16px}
+  .sync{font-size:12px;color:#9aa3c7;min-height:18px}
+  kbd{background:#242742;border:1px solid #40466f;border-radius:3px;padding:1px 6px;font-family:monospace}
+</style>
+</head>
+<body>
+<h1>PIPE DASH</h1>
+
+<div id="hud">Arrow keys to move &nbsp;|&nbsp; Spacebar to jump &nbsp;|&nbsp; Coin 200 pts &nbsp;|&nbsp; Goomba 100 pts &nbsp;|&nbsp; 25 pts per second remaining</div>
+
+<div id="wrap">
+  <canvas id="c" width="960" height="540"></canvas>
+
+  <div class="overlay" id="startScreen">
+    <p><kbd>&larr;</kbd> <kbd>&rarr;</kbd> move &nbsp;•&nbsp; <kbd>Space</kbd> jump (hold to jump higher)</p>
+
+    <div id="regForm">
+      <div class="field"><label for="fName">Full name</label>
+        <input id="fName" type="text" maxlength="60" autocomplete="off" placeholder="Jane Doe"></div>
+      <div class="field"><label for="fId">Employee ID</label>
+        <input id="fId" type="text" maxlength="20" autocomplete="off" placeholder="123456"></div>
+      <div class="field"><label>Location</label>
+        <div class="radios">
+          <label><input type="radio" name="loc" value="Americas"> Americas</label>
+          <label><input type="radio" name="loc" value="UK/EMEA"> UK/EMEA</label>
+          <label><input type="radio" name="loc" value="India"> India</label>
+        </div></div>
+      <div id="regErr" class="err"></div>
+    </div>
+
+    <button class="btn" id="startBtn">START GAME</button>
+    <p class="hint">Your name, ID, location and score are recorded once the run ends.</p>
+  </div>
+
+  <div class="overlay" id="endScreen" style="display:none">
+    <h2 id="endTitle">TIME UP</h2>
+    <p id="endBody"></p>
+    <p id="syncMsg" class="sync"></p>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn" id="againBtn">Play again</button>
+      <button class="btn alt" id="exitBtn">Exit</button>
+    </div>
+    <p class="hint" id="exitNote"></p>
+  </div>
+</div>
+
+<script>
+/* ==============================================================
+   CONFIG — centralized tracking via Google Sheets.
+   Paste your Apps Script Web App URL below (see google-sheets-tracking-setup.md
+   for the 5-minute setup). Until you paste it, results are stored locally only.
+   ============================================================== */
+const REMOTE_ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbxH0i2Zav_0HK0l9kpzAutKM2BIBb-iOAZu4R-a9hFc3L9gjs173ruyMbX-NMcwKisf4A/exec";
+const REMOTE_SHARED_SECRET = "CHANGE_ME_SHARED_SECRET"; // must match the value in the Apps Script
+
+let player = { name:'', empId:'', location:'' };
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const W = 960, H = 540, T = 40;            // tile size
+const GROUND_Y = 440;                       // top of ground
+const LEVEL_W = 7400;
+const TIME_LIMIT = 90;
+
+/* ---------------- input ---------------- */
+const keys = {};
+addEventListener('keydown', e => {
+  const tag = (e.target && e.target.tagName) || '';
+  if(tag === 'INPUT' || tag === 'TEXTAREA') return; // let normal typing happen (e.g. spaces in names)
+  if(['ArrowLeft','ArrowRight','Space','ArrowUp'].includes(e.code)) e.preventDefault();
+  keys[e.code] = true;
+});
+addEventListener('keyup', e => {
+  const tag = (e.target && e.target.tagName) || '';
+  if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+  keys[e.code] = false;
+});
+
+/* ---------------- sprites ---------------- */
+const PAL = {R:'#e52521',S:'#fbc37d',B:'#6b3a13',Y:'#ffd84d',W:'#ffffff',K:'#000000',
+             G:'#8b4f1d',D:'#4a2a0c',P:'#2bad3a',L:'#5fdc57',O:'#f8a45c'};
+const MARIO = [
+  "....RRRRR...","...RRRRRRRRR","...BBBSSBS..","..BSBSSSBSSS",
+  "..BSBBSSSBSS","..BBSSSSBBB.","....SSSSSS..","...RRBRRBRR.",
+  "..RRRRBRRBRR",".RRRRRBBBBRR",".SSRRBYYBRRS",".SSSRBYYBRSS",
+  ".SSRRBBBBRRS","...RRR..RRR.","..BBB....BBB",".BBBB....BBBB".slice(0,12)
+];
+const GOOMBA = [
+  "...KKKKKK...","..KKKKKKKK..",".KKKKKKKKKK.","KKWKKKKKKWKK",
+  "KWWKKKKKKWWK","KWKKKKKKKKWK","KKKKKKKKKKKK",".KKKKKKKKKK.",
+  "..GGGGGGGG..",".GGGGGGGGGG.","GGG..GG..GGG","GG....GG..GG"
+];
+function drawSprite(rows, x, y, px, flip){
+  ctx.save();
+  if(flip){ ctx.translate(x + rows[0].length*px, y); ctx.scale(-1,1); }
+  else ctx.translate(x,y);
+  for(let r=0;r<rows.length;r++){
+    const row = rows[r];
+    for(let c=0;c<row.length;c++){
+      const ch = row[c];
+      if(ch === '.') continue;
+      ctx.fillStyle = PAL[ch] || '#f0f';
+      ctx.fillRect(c*px, r*px, px, px);
+    }
+  }
+  ctx.restore();
+}
+
+/* ---------------- level ---------------- */
+let solids, blocks, coins, goombas, pipes, particles, flag, mario, cam, state;
+
+function makeLevel(){
+  solids = []; blocks = []; coins = []; goombas = []; pipes = []; particles = [];
+
+  // ground segments  [startX, endX]
+  const segs = [[0,1720],[1840,3320],[3440,5120],[5240,LEVEL_W]];
+  segs.forEach(s => solids.push({x:s[0], y:GROUND_Y, w:s[1]-s[0], h:H-GROUND_Y, type:'ground'}));
+
+  const brick = (x,y)=>{ const b={x,y,w:T,h:T,type:'brick',hit:0}; blocks.push(b); solids.push(b); };
+  const qmark = (x,y)=>{ const b={x,y,w:T,h:T,type:'q',used:false,hit:0}; blocks.push(b); solids.push(b); };
+  const pipe  = (x,h,plant)=>{ const p={x,y:GROUND_Y-h,w:80,h:h,plant:plant,t:Math.random()*Math.PI*2};
+                               pipes.push(p); solids.push({x:p.x,y:p.y,w:80,h:h,type:'pipe'}); };
+  const coin  = (x,y)=>coins.push({x,y,w:24,h:32,got:false,t:Math.random()*6});
+  const goomba= (x)=>goombas.push({x,y:GROUND_Y-36,w:36,h:36,vx:-1.1,dead:0,alive:true,activated:false});
+
+  // ---- opening run ----
+  qmark(520, 280);
+  brick(720, 280); qmark(760, 280); brick(800, 280);
+  coin(750, 190); coin(790, 190);
+  goomba(980);
+  pipe(1180, 80, false);
+  coin(1320, 340); coin(1360, 340); coin(1400, 340);
+  pipe(1500, 120, true);
+  // gap 1720-1840
+  brick(1900, 280); qmark(1940, 280); brick(1980, 280);
+  coin(1900,190); coin(1940,190); coin(1980,190);
+  goomba(2180); goomba(2320);
+  pipe(2500, 80, true);
+  brick(2740,280); brick(2780,280); brick(2820,280); qmark(2860,280); brick(2900,280);
+  coin(2780,190); coin(2860,190);
+  // staircase up
+  for(let i=0;i<4;i++) for(let j=0;j<=i;j++) brick(3080+i*T, GROUND_Y-T-j*T);
+  coin(3220, 200); coin(3260, 200);
+  // gap 3320-3440
+  goomba(3620);
+  qmark(3700,280); qmark(3740,280);
+  pipe(3900, 120, true);
+  coin(4040,330); coin(4090,300); coin(4140,330);
+  brick(4300,280); qmark(4340,280); brick(4380,280);
+  goomba(4560); goomba(4700);
+  // floating platform
+  for(let i=0;i<6;i++) brick(4820+i*T, 300);
+  coin(4860,240); coin(4940,240); coin(5020,240);
+  // gap 5120-5240
+  pipe(5400, 80, false);
+  brick(5620,280); qmark(5660,280); brick(5700,280); qmark(5740,280); brick(5780,280);
+  coin(5660,190); coin(5740,190);
+  goomba(6000);
+  coin(6160,340); coin(6200,340); coin(6240,340); coin(6280,340);
+  pipe(6420, 120, true);
+  // final staircase
+  for(let i=0;i<5;i++) for(let j=0;j<=i;j++) brick(6640+i*T, GROUND_Y-T-j*T);
+
+  flag = {x:7060, y:GROUND_Y-320, h:320, raised:0};
+
+  mario = {x:80, y:GROUND_Y-64, w:24, h:32, vx:0, vy:0, onGround:false, face:1,
+           anim:0, dead:0, spawnX:80, jumpHeld:0};
+  cam = 0;
+  state = {score:0, coins:0, stomps:0, time:TIME_LIMIT, running:true, won:false, over:false};
+}
+
+/* ---------------- physics helpers ---------------- */
+function hits(a,b){ return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y; }
+
+function moveAndCollide(e){
+  // horizontal
+  e.x += e.vx;
+  for(const s of solids){
+    if(s.dead) continue;
+    if(hits(e,s)){
+      if(e.vx > 0) e.x = s.x - e.w;
+      else if(e.vx < 0) e.x = s.x + s.w;
+      e.vx = 0;
+    }
+  }
+  // vertical
+  e.y += e.vy;
+  e.onGround = false;
+  for(const s of solids){
+    if(s.dead) continue;
+    if(hits(e,s)){
+      if(e.vy > 0){ e.y = s.y - e.h; e.onGround = true; e.vy = 0; }
+      else if(e.vy < 0){ e.y = s.y + s.h; e.vy = 0; if(e === mario) bump(s); }
+    }
+  }
+}
+
+function bump(s){
+  const b = blocks.find(b => b === s);
+  if(!b) return;
+  b.hit = 10;
+  if(b.type === 'q' && !b.used){
+    b.used = true;
+    particles.push({type:'coin', x:b.x+8, y:b.y-28, vy:-9, life:38});
+    addCoin();
+  }
+}
+
+function addCoin(){ state.coins++; state.score += 200; }
+
+/* ---------------- update ---------------- */
+let last = performance.now(), acc = 0;
+function loop(now){
+  requestAnimationFrame(loop);
+  acc += Math.min(now - last, 100); last = now;
+  while(acc >= 16.667){ update(); acc -= 16.667; }
+  render();
+}
+
+function update(){
+  if(!state.running) return;
+
+  state.time -= 1/60;
+  if(state.time <= 0){ state.time = 0; endGame(false); return; }
+
+  // --- mario control ---
+  if(mario.dead > 0){
+    mario.dead--; mario.y += mario.vy; mario.vy += 0.5;
+    if(mario.dead === 0) respawn();
+  } else {
+    const ACC = 0.55, MAX = 5.2, FRIC = 0.82;
+    if(keys.ArrowLeft){ mario.vx -= ACC; mario.face = -1; }
+    else if(keys.ArrowRight){ mario.vx += ACC; mario.face = 1; }
+    else mario.vx *= FRIC;
+    mario.vx = Math.max(-MAX, Math.min(MAX, mario.vx));
+
+    const jump = keys.Space || keys.ArrowUp;
+    if(jump && mario.onGround){ mario.vy = -12.2; mario.jumpHeld = 14; }
+    if(jump && mario.jumpHeld > 0){ mario.vy -= 0.42; mario.jumpHeld--; }
+    if(!jump) mario.jumpHeld = 0;
+
+    mario.vy = Math.min(mario.vy + 0.62, 16);
+    moveAndCollide(mario);
+    mario.x = Math.max(0, Math.min(mario.x, LEVEL_W - mario.w));
+    if(Math.abs(mario.vx) > 0.3) mario.anim += 0.22;
+
+    if(mario.y > H + 60) kill();
+
+    // coins
+    for(const c of coins){
+      if(!c.got && hits(mario, c)){ c.got = true; addCoin();
+        particles.push({type:'pop', x:c.x, y:c.y, life:20}); }
+    }
+    // goombas
+    for(const g of goombas){
+      if(!g.alive) continue;
+      if(hits(mario, g)){
+        if(mario.vy > 0 && mario.y + mario.h - mario.vy <= g.y + 14){
+          g.alive = false; g.dead = 22; mario.vy = -9;
+          state.stomps++; state.score += 100;
+        } else kill();
+      }
+    }
+    // piranha plants
+    for(const p of pipes){
+      if(!p.plant) continue;
+      const out = plantOut(p);
+      if(out > 4){
+        const r = {x:p.x+24, y:p.y-out, w:32, h:out};
+        if(hits(mario, r)) kill();
+      }
+    }
+    // flag
+    if(mario.x + mario.w > flag.x){ endGame(true); return; }
+  }
+
+  // --- goombas ---
+  const GOOMBA_SPEED = 1.1;
+  for(const g of goombas){
+    if(g.alive){
+      g.vy = (g.vy||0) + 0.62;
+
+      if(!g.activated){
+        // pick a direction toward Mario the moment this goomba first becomes visible,
+        // then keep that direction — it should not keep re-chasing after that
+        const onScreen = g.x > cam - 40 && g.x < cam + W + 40;
+        if(onScreen){
+          g.vx = (mario.x < g.x ? -GOOMBA_SPEED : GOOMBA_SPEED);
+          g.activated = true;
+        } else {
+          g.vx = 0;
+        }
+      }
+
+      g.beforeX = g.x;
+      g.x += g.vx;
+      for(const s of solids){ if(hits(g,s)){ g.x = g.beforeX; g.vx *= -1; break; } }
+      g.y += g.vy;
+      for(const s of solids){ if(hits(g,s) && g.vy>0){ g.y = s.y - g.h; g.vy = 0; } }
+      if(g.y > H) g.alive = false;
+    } else if(g.dead > 0) g.dead--;
+  }
+  // goombas shouldn't overlap each other — bounce both off on contact
+  for(let i=0;i<goombas.length;i++){
+    const a = goombas[i];
+    if(!a.alive) continue;
+    for(let j=i+1;j<goombas.length;j++){
+      const b = goombas[j];
+      if(!b.alive) continue;
+      if(hits(a,b)){
+        a.x = (a.beforeX != null) ? a.beforeX : a.x;
+        b.x = (b.beforeX != null) ? b.beforeX : b.x;
+        a.vx *= -1;
+        b.vx *= -1;
+      }
+    }
+  }
+
+  // --- pipes / blocks / particles ---
+  for(const p of pipes) if(p.plant) p.t += 0.022;
+  for(const b of blocks) if(b.hit > 0) b.hit--;
+  for(const pt of particles){
+    pt.life--;
+    if(pt.type === 'coin'){ pt.y += pt.vy; pt.vy += 0.55; }
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  // camera
+  const target = mario.x - W*0.38;
+  cam += (Math.max(0, Math.min(target, LEVEL_W - W)) - cam) * 0.12;
+}
+
+function plantOut(p){
+  const s = Math.sin(p.t);
+  return s > 0 ? s * 56 : 0;
+}
+
+function kill(){
+  if(mario.dead > 0) return;
+  mario.dead = 55; mario.vy = -10;
+  state.score = Math.max(0, state.score - 100);
+}
+function respawn(){
+  mario.x = Math.max(0, mario.x - 260);
+  // nudge to nearest solid ground
+  mario.y = GROUND_Y - 200; mario.vx = 0; mario.vy = 0;
+  const segs = solids.filter(s => s.type === 'ground');
+  let ok = segs.some(s => mario.x+mario.w > s.x && mario.x < s.x+s.w);
+  if(!ok) mario.x = segs.reduce((a,s)=> Math.abs(s.x+60-mario.x) < Math.abs(a-mario.x) ? s.x+60 : a, 80);
+}
+
+function endGame(won){
+  state.running = false; state.over = true; state.won = won;
+  const bonus = won ? Math.round(state.time) * 25 : 0;
+  state.score += bonus;
+  document.getElementById('endTitle').textContent = won ? 'STAGE CLEAR!' : "TIME'S UP";
+  document.getElementById('endBody').innerHTML = won
+    ? `Coins: <b>${state.coins}</b> &nbsp;•&nbsp; Goombas stomped: <b>${state.stomps}</b><br>
+       Time remaining: <b>${Math.round(state.time)}s</b> &rarr; time bonus <b>${bonus}</b><br><br>
+       FINAL SCORE: <b style="font-size:26px;color:#ffd84d">${state.score}</b>`
+    : `You reached ${Math.round(mario.x/LEVEL_W*100)}% of the stage.<br>
+       Coins: <b>${state.coins}</b> &nbsp;•&nbsp; Score: <b>${state.score}</b><br><br>Run faster — the flag is waiting.`;
+  document.getElementById('syncMsg').textContent = '';
+  document.getElementById('endScreen').style.display = 'flex';
+  submitResult();
+}
+
+/* ---------------- render ---------------- */
+function render(){
+  // sky
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#5c94fc'); g.addColorStop(1,'#9fd0ff');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+  drawHills(cam*0.25);
+  drawClouds(cam*0.45);
+
+  ctx.save();
+  ctx.translate(-Math.round(cam), 0);
+
+  // ground
+  for(const s of solids){
+    if(s.type !== 'ground') continue;
+    ctx.fillStyle = '#c86b1c'; ctx.fillRect(s.x, s.y, s.w, s.h);
+    ctx.fillStyle = '#4fbf3f'; ctx.fillRect(s.x, s.y, s.w, 10);
+    ctx.fillStyle = 'rgba(0,0,0,.14)';
+    for(let x=s.x; x<s.x+s.w; x+=T){
+      ctx.fillRect(x, s.y+10, 2, s.h-10);
+      ctx.fillRect(x, s.y+10+T, T, 2);
+    }
+  }
+
+  // pipes
+  for(const p of pipes){
+    const out = p.plant ? plantOut(p) : 0;
+    if(out > 4) drawPlant(p.x+24, p.y - out, out);
+    ctx.fillStyle = '#2bad3a'; ctx.fillRect(p.x+8, p.y+26, 64, p.h-26);
+    ctx.fillStyle = '#5fdc57'; ctx.fillRect(p.x+14, p.y+26, 12, p.h-26);
+    ctx.fillStyle = '#146b1e'; ctx.fillRect(p.x+60, p.y+26, 8, p.h-26);
+    ctx.fillStyle = '#2bad3a'; ctx.fillRect(p.x, p.y, 80, 28);
+    ctx.fillStyle = '#5fdc57'; ctx.fillRect(p.x+6, p.y, 12, 28);
+    ctx.fillStyle = '#146b1e'; ctx.fillRect(p.x, p.y+22, 80, 6);
+  }
+
+  // blocks
+  for(const b of blocks){
+    const oy = b.hit > 0 ? -Math.sin((10-b.hit)/10*Math.PI)*10 : 0;
+    const x = b.x, y = b.y + oy;
+    if(b.type === 'brick'){
+      ctx.fillStyle = '#c1571d'; ctx.fillRect(x,y,T,T);
+      ctx.fillStyle = '#7a2f0a';
+      for(let r=0;r<4;r++) ctx.fillRect(x, y+r*10, T, 2);
+      for(let r=0;r<4;r++) ctx.fillRect(x + (r%2?20:0), y+r*10, 2, 10);
+    } else {
+      ctx.fillStyle = b.used ? '#9a6b2e' : '#e6a020';
+      ctx.fillRect(x,y,T,T);
+      ctx.fillStyle = b.used ? '#6e4a1c' : '#b7791a';
+      ctx.fillRect(x,y,T,4); ctx.fillRect(x,y+T-4,T,4);
+      ctx.fillRect(x,y,4,T); ctx.fillRect(x+T-4,y,4,T);
+      if(!b.used){
+        ctx.fillStyle = '#7a4a05'; ctx.font = 'bold 26px Verdana';
+        ctx.textAlign = 'center'; ctx.fillText('?', x+T/2, y+30);
+      }
+    }
+  }
+
+  // coins
+  for(const c of coins){
+    if(c.got) continue;
+    c.t += 0.13;
+    const w = Math.abs(Math.cos(c.t)) * 11 + 3;
+    ctx.fillStyle = '#ffd84d';
+    ctx.beginPath(); ctx.ellipse(c.x+12, c.y+16, w, 15, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#c98f10';
+    ctx.beginPath(); ctx.ellipse(c.x+12, c.y+16, w*0.45, 8, 0, 0, Math.PI*2); ctx.fill();
+  }
+
+  // goombas
+  for(const g of goombas){
+    if(g.alive) drawSprite(GOOMBA, g.x, g.y, 3, g.vx > 0);
+    else if(g.dead > 0){ ctx.fillStyle='#6b3a13'; ctx.fillRect(g.x, g.y+26, 36, 10); }
+  }
+
+  // flag
+  ctx.fillStyle = '#d8d8d8'; ctx.fillRect(flag.x, flag.y, 8, flag.h);
+  ctx.fillStyle = '#2bad3a';
+  ctx.beginPath(); ctx.moveTo(flag.x+8, flag.y+10);
+  ctx.lineTo(flag.x+70, flag.y+32); ctx.lineTo(flag.x+8, flag.y+54); ctx.fill();
+  ctx.fillStyle = '#ffd84d'; ctx.fillRect(flag.x-6, flag.y-14, 20, 16);
+
+  // particles
+  for(const p of particles){
+    if(p.type === 'coin'){
+      ctx.fillStyle = '#ffd84d';
+      ctx.beginPath(); ctx.ellipse(p.x+8, p.y, 7, 14, 0, 0, Math.PI*2); ctx.fill();
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,'+(p.life/20)+')';
+      ctx.font = 'bold 18px Verdana'; ctx.textAlign='center';
+      ctx.fillText('+200', p.x+12, p.y - (20-p.life));
+    }
+  }
+
+  // mario
+  if(mario.dead > 0) ctx.globalAlpha = 0.55;
+  const frame = (!mario.onGround) ? MARIO : MARIO;
+  drawSprite(frame, Math.round(mario.x), Math.round(mario.y) + (Math.abs(mario.vx)>0.3 && mario.onGround ? Math.round(Math.sin(mario.anim))*2 : 0), 2, mario.face === -1);
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+  drawHUD();
+}
+
+function drawPlant(x, y, out){
+  ctx.fillStyle = '#2bad3a'; ctx.fillRect(x+12, y+out*0.45, 8, out);
+  ctx.fillStyle = '#e52521';
+  ctx.beginPath(); ctx.ellipse(x+16, y+18, 18, 18, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(x+8, y+12, 4,4,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x+24, y+12, 4,4,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x+4, y+22, 24, 5);
+}
+
+const CLOUDS = [], HILLS = [];
+for(let i=0;i<26;i++) CLOUDS.push({x:i*420 + (i*137)%300, y:40 + (i*83)%150, s:0.8 + (i%3)*0.35});
+for(let i=0;i<20;i++) HILLS.push({x:i*520 + (i*211)%260, s:0.9 + (i%2)*0.6});
+
+function drawClouds(off){
+  ctx.fillStyle = '#fff';
+  for(const c of CLOUDS){
+    const x = c.x - off % 10920;
+    if(x < -240 || x > W+240) continue;
+    const s = c.s;
+    ctx.beginPath();
+    ctx.ellipse(x, c.y, 34*s, 22*s, 0,0,Math.PI*2);
+    ctx.ellipse(x+34*s, c.y-10*s, 28*s, 22*s, 0,0,Math.PI*2);
+    ctx.ellipse(x+66*s, c.y, 30*s, 20*s, 0,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+function drawHills(off){
+  for(const h of HILLS){
+    const x = h.x - off % 10400;
+    if(x < -400 || x > W+400) continue;
+    const r = 110*h.s;
+    ctx.fillStyle = '#3ea62f';
+    ctx.beginPath(); ctx.ellipse(x, GROUND_Y+18, r, r*0.72, 0, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#2f8a24';
+    ctx.beginPath(); ctx.ellipse(x-r*0.3, GROUND_Y+18, r*0.3, r*0.35, 0, Math.PI, 0); ctx.fill();
+  }
+  ctx.fillStyle = '#3ea62f'; ctx.fillRect(0, GROUND_Y+14, W, H-GROUND_Y);
+}
+
+function drawHUD(){
+  ctx.fillStyle = 'rgba(0,0,0,.42)'; ctx.fillRect(0,0,W,46);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 20px Verdana'; ctx.textAlign = 'left';
+  ctx.fillText('SCORE  ' + String(state.score).padStart(6,'0'), 24, 31);
+  ctx.fillStyle = '#ffd84d';
+  ctx.beginPath(); ctx.ellipse(340, 24, 8, 11, 0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillText('× ' + String(state.coins).padStart(2,'0'), 356, 31);
+  ctx.textAlign = 'center';
+  ctx.fillText('WORLD 1-1', 560, 31);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = state.time < 15 ? '#ff5a4d' : '#fff';
+  ctx.fillText('TIME  ' + String(Math.ceil(state.time)).padStart(2,'0'), W-24, 31);
+  // progress bar
+  ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fillRect(24, 38, W-48, 4);
+  ctx.fillStyle = '#ffd84d'; ctx.fillRect(24, 38, (W-48) * Math.min(1, mario.x/flag.x), 4);
+}
+
+/* ---------------- wiring ---------------- */
+/* ---- send result to Power Automate -> Excel on SharePoint ---- */
+function submitResult(){
+  const msg = document.getElementById('syncMsg');
+  const payload = {
+    name: player.name,
+    employeeId: player.empId,
+    location: player.location,
+    score: state.score,
+    coins: state.coins,
+    goombas: state.stomps,
+    timeRemaining: Math.round(state.time),
+    timeTaken: TIME_LIMIT - Math.round(state.time),
+    completed: state.won ? "Yes" : "No",
+    playedAt: new Date().toISOString()
+  };
+  // always keep a local copy as a safety net
+  try{
+    const log = JSON.parse(localStorage.getItem('pipeDashLog') || '[]');
+    log.push(payload); localStorage.setItem('pipeDashLog', JSON.stringify(log));
+  }catch(e){}
+
+  if(!/^https:\/\//.test(REMOTE_ENDPOINT_URL)){
+    msg.textContent = 'Result saved locally (no tracking sheet configured yet).'; return;
+  }
+  msg.textContent = 'Saving your result…';
+  const remotePayload = Object.assign({ secret: REMOTE_SHARED_SECRET }, payload);
+  fetch(REMOTE_ENDPOINT_URL, {
+    method: 'POST',
+    headers: {'Content-Type':'text/plain;charset=utf-8'}, // avoids a CORS preflight against Apps Script
+    body: JSON.stringify(remotePayload)
+  })
+  .then(r => { msg.textContent = r.ok ? '✔ Result recorded.'
+                                      : '⚠ Could not record result (HTTP '+r.status+').'; })
+  .catch(() => { msg.textContent = '⚠ Could not reach the tracking sheet. Result saved locally.'; });
+}
+
+document.getElementById('startBtn').onclick = () => {
+  const name = document.getElementById('fName').value.trim();
+  const id   = document.getElementById('fId').value.trim();
+  const loc  = document.querySelector('input[name=loc]:checked');
+  const err  = document.getElementById('regErr');
+  if(!name || !id || !loc){ err.textContent = 'Name, Employee ID and Location are all required.'; return; }
+  err.textContent = '';
+  player = { name:name, empId:id, location:loc.value };
+  document.getElementById('startScreen').style.display = 'none';
+  makeLevel(); cv.focus();
+};
+document.getElementById('againBtn').onclick = () => {
+  document.getElementById('endScreen').style.display = 'none';
+  makeLevel();
+};
+document.getElementById('exitBtn').onclick = () => {
+  const note = document.getElementById('exitNote');
+  window.close();
+  // Most browsers only let scripts close tabs they themselves opened.
+  // If we're still here after trying, tell the player to close it manually.
+  note.textContent = 'You can close this browser tab now.';
+};
+
+makeLevel();
+state.running = false;
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
